@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - adarsh_feature   # add more feature branches here if needed yes
+      - adarsh_feature   # add more feature branches here if needed
       # or use 'feature/*' to auto‑include all feature branches
 
 jobs:
