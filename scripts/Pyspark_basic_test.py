@@ -1,9 +1,13 @@
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
 
 spark = SparkSession.builder.appName("HelloSpark").getOrCreate()
 
 # Read sample data from S3 (replace with your bucket later)
-df = spark.read.option("header", "true").csv("s3://my-bucket/raw/sample.csv")
+df_listings = spark.read.format('csv')\
+          .option('header', True)\
+          .option('inferSchema', True)\
+          .load("s3://project-data-adarshpractice/AirBnb_Data/Listings.csv")
 
 # Show first few rows
-df.show()
+df_listings.show()
