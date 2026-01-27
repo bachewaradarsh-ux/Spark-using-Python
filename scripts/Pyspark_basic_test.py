@@ -22,3 +22,9 @@ df_result = df_listings.join(broadcast(df_superhost),"city", 'left')\
 df_result.write.format('parquet')\
                .mode("overwrite")\
                .save("s3://project-data-adarshpractice/AirBnb_Data/processed_data")
+
+
+df_result_show = spark.read.format('parquet')\
+                      .load("s3://project-data-adarshpractice/AirBnb_Data/processed_data")
+
+df_result_show.show()
