@@ -19,4 +19,6 @@ df_result = df_listings.join(broadcast(df_superhost),"city", 'left')\
                        .fillna("No Super Host", subset = ['city'])\
                        .select(col("city"),(col("superhost_count") / col("total_count")) * 100)\
 
-df_result.write.format('parquet').path("s3://project-data-adarshpractice/AirBnb_Data/processed_data")
+df_result.write.format('parquet')\
+               .mode("overwrite")\
+               .save("s3://project-data-adarshpractice/AirBnb_Data/processed_data")
