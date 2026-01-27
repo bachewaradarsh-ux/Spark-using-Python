@@ -2,7 +2,7 @@ import boto3, json
 from pyspark.sql import SparkSession
 
 # Load Snowflake params from S3
-def load_params(bucket="telecom-project", key="param_store/snowflake_params.json"):
+def load_params(bucket="project-data-adarshpractice", key="telekom_project/param_store/snowflake_param.json"):
     s3 = boto3.client("s3")
     obj = s3.get_object(Bucket=bucket, Key=key)
     params = json.loads(obj['Body'].read().decode('utf-8'))
