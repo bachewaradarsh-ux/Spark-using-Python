@@ -6,7 +6,6 @@ import logging
 from datetime import datetime
 from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
-import snowflake.connector
 
 # Import ProjectLogger (from earlier)
 from s3_logger import s3_logger
@@ -38,19 +37,13 @@ sfOptions = json.loads(param['Parameter']['Value'])
 # Fetch Batch ID from Snowflake CONFIG.BATCH
 # -------------------------------
 try:
-    conn = snowflake.connector.connect(
-        user=sfOptions["sfUser"],
-        password=sfOptions["sfPassword"],
-        account=sfOptions["sfURL"],
-        warehouse=sfOptions["sfWarehouse"],
-        database=sfOptions["sfDatabase"],
-        schema="CONFIG"
-    )
-    cur = conn.cursor()
-    cur.execute("select coalesce(max(batch_id),0) from batch_control where batch_name = 'STG_LOAD'")
-    batch_id = cur.fetchone()[0]
-    cur.close()
-    conn.close()
+    # Read from CONFIG schema
+    batch_df = spark.read.format("snowflake") \
+    .options(**sfOptions) \
+    .option("sfSchema", "CONFIG") \
+    .option("query", "select coalesce(max(batch_id),0) from batch_control where batch_name = 'STG_LOAD'") \
+    .load()
+    batch_id = batch_df.collect()[0]["BATCH_ID"]
     logger.log("INFO", "Fetched batch_id from CONFIG.BATCH", {"batch_id": batch_id})
 except Exception as e:
     logger.log("ERROR", "Failed to fetch batch_id", {"error": str(e)})
