@@ -3,6 +3,7 @@ import os
 import json
 import boto3
 import logging
+import s3_logger
 from datetime import datetime
 from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
