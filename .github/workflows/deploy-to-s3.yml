@@ -27,8 +27,8 @@ jobs:
           echo "Branch detected: ${{ github.ref }}"
           if [ "${{ github.ref }}" == "refs/heads/main" ]; then
             echo "Deploying to PROD bucket..."
-            aws s3 sync . s3://project-scripts-main/ --delete
+            aws s3 sync . s3://projectscripts-main/ --delete
           elif [ "${{ github.ref }}" == "refs/heads/adarsh_feature" ]; then
             echo "Deploying to TEST bucket/prefix..."
-            aws s3 sync . s3://project-scripts-feature/adarsh_feature/ --delete
+            aws s3 sync . s3://projectscripts-feature/adarsh_feature/ --delete
           fi

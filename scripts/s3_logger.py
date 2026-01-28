@@ -1,19 +1,18 @@
 import logging
 import boto3
+import json
 from datetime import datetime
+from pyspark.sql import SparkSession
 
-class S3Logger:
+class ProjectLogger:
     def __init__(self, job_name, bucket_name="project-data-adarshpractice"):
-        """
-        Initialize the logger.
-        :param job_name: Name of the script/job (used as subfolder in logs).
-        :param bucket_name: Same bucket as input files.
-        """
-        self.bucket_name = bucket_name
         self.job_name = job_name
+        self.bucket_name = bucket_name
+        self.session_ts = datetime.now().strftime("%Y%m%d%H%M%S")
+        self.s3 = boto3.client("s3")
         self.log_entries = []
 
-        # Configure console logging
+        # Console logging (still goes to CloudWatch automatically in Glue/EMR)
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -21,14 +20,20 @@ class S3Logger:
         )
         self.logger = logging.getLogger(job_name)
 
-    def log(self, level, message):
-        """
-        Log a message with given level.
-        """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry = f"{timestamp} [{level}] {self.job_name}: {message}"
+    def _s3_key(self):
+        return f"telekom_project/logs/{self.job_name}/{self.job_name}_{self.session_ts}.json"
+
+    def log(self, level, message, extra=None):
+        entry = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "level": level,
+            "job_name": self.job_name,
+            "message": message,
+            "extra": extra or {}
+        }
         self.log_entries.append(entry)
 
+        # Console logging
         if level == "INFO":
             self.logger.info(message)
         elif level == "WARN":
@@ -39,30 +44,23 @@ class S3Logger:
             self.logger.debug(message)
 
     def capture_spark_metadata(self, spark):
-        """
-        Capture Spark application metadata for audit.
-        """
         app_id = spark.sparkContext.applicationId
         master = spark.sparkContext.master
-        conf = spark.sparkContext.getConf().getAll()
+        conf = dict(spark.sparkContext.getConf().getAll())
+        event_log_dir = spark.sparkContext.getConf().get("spark.eventLog.dir", None)
 
-        self.log("INFO", f"Spark App ID: {app_id}")
-        self.log("INFO", f"Spark Master: {master}")
-        self.log("INFO", f"Spark Config: {conf}")
+        self.log("INFO", "Spark Metadata", {
+            "app_id": app_id,
+            "master": master,
+            "conf": conf,
+            "event_log_dir": event_log_dir
+        })
 
     def flush_to_s3(self):
-        """
-        Write all collected logs to S3 inside logs/job_name folder.
-        """
-        s3 = boto3.client("s3")
-        ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        key = f"logs/{self.job_name}/{self.job_name}_{ts}.log"
-
-        log_data = "\n".join(self.log_entries)
-
-        s3.put_object(
+        log_data = "\n".join(json.dumps(entry) for entry in self.log_entries)
+        self.s3.put_object(
             Bucket=self.bucket_name,
-            Key=key,
+            Key=self._s3_key(),
             Body=log_data.encode("utf-8")
         )
-        print(f"Logs written to s3://{self.bucket_name}/{key}")
+        print(f"Audit logs written to s3://{self.bucket_name}/{self._s3_key()}")
