@@ -3,20 +3,20 @@ import os
 import json
 import boto3
 import logging
-import s3_logger
 from datetime import datetime
 from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
-# Import ProjectLogger (from earlier)
-from s3_logger import s3_logger
+# Import ProjectLogger from your s3_logger package
+from s3_logger import ProjectLogger
 
 # -------------------------------
 # Glue Job Parameters
 # -------------------------------
 args = getResolvedOptions(sys.argv, ['ENV', 'INPUT_FILE'])
 ENV = args['ENV']
-INPUT_FILE = args['INPUT_FILE']   # e.g. s3://project-data-adarshpractice/telekom_project/input/customer_master_*.csv.gz
+INPUT_FILE = args['INPUT_FILE']   # e.g. s3://.../customer_master_20260127.csv.gz
 
 # Initialize Spark
 spark = SparkSession.builder.appName("TelekomStageLoader").getOrCreate()
@@ -38,16 +38,16 @@ sfOptions = json.loads(param['Parameter']['Value'])
 # Fetch Batch ID from Snowflake CONFIG.BATCH
 # -------------------------------
 try:
-    # Read from CONFIG schema
     batch_df = spark.read.format("snowflake") \
-    .options(**sfOptions) \
-    .option("sfSchema", "CONFIG") \
-    .option("query", "select coalesce(max(batch_id),0) from batch_control where batch_name = 'STG_LOAD'") \
-    .load()
+        .options(**sfOptions) \
+        .option("sfSchema", "CONFIG") \
+        .option("query", "select coalesce(max(batch_id),0) as BATCH_ID from batch_control where batch_name = 'STG_LOAD'") \
+        .load()
     batch_id = batch_df.collect()[0]["BATCH_ID"]
     logger.log("INFO", "Fetched batch_id from CONFIG.BATCH", {"batch_id": batch_id})
 except Exception as e:
     logger.log("ERROR", "Failed to fetch batch_id", {"error": str(e)})
+    batch_id = 0
 
 # -------------------------------
 # Process Input File
@@ -68,7 +68,6 @@ logger.log("INFO", "Processing file", {
 df = spark.read.option("header", "true").csv(INPUT_FILE)
 
 # Add metadata columns
-from pyspark.sql import functions as F
 df = df.withColumn("lieferdatum", F.lit(substr(lieferdatum,1,8))) \
        .withColumn("batch_id", F.lit(batch_id))
 
