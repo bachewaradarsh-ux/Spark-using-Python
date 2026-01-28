@@ -19,7 +19,7 @@ sfOptions = json.loads(param['Parameter']['Value'])
 # Example: Read from staging table
 df = spark.read.format("snowflake") \
     .options(**sfOptions) \
-    .option("dbtable", "CUSTOMER_MASTER") \
+    .option("dbtable", "STG_CUSTOMER_MASTER") \
     .load()
 
 # Show results
