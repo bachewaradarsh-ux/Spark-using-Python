@@ -1,41 +1,26 @@
-import boto3
+import sys
 import json
+import boto3
+from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
 
-# -------- Load Snowflake params from S3 --------
-def load_params(bucket="project-data-adarshpractice",
-                key="telekom_project/param_store/snowflake_param.json",
-                region="ap-south-2"):
-    """
-    Fetch Snowflake connection parameters from S3.
-    Bucket is in ap-south-2, so force boto3 to use that region.
-    """
-    s3 = boto3.client("s3", region_name=region)
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    params = json.loads(obj['Body'].read().decode('utf-8'))
-    return params
+# Get ENV argument (dev/prod) from Glue job parameters
+args = getResolvedOptions(sys.argv, ['ENV'])
+ENV = args['ENV']
 
-params = load_params()
+# Initialize Spark
+spark = SparkSession.builder.appName("SnowflakeReader").getOrCreate()
 
-# -------- Spark session --------
-spark = SparkSession.builder.appName("snowflake_test").getOrCreate()
+# Fetch Snowflake config JSON from Parameter Store
+ssm = boto3.client('ssm', region_name='ap-south-2')
+param = ssm.get_parameter(Name=f"/snowflake/{ENV}/config", WithDecryption=True)
+sfOptions = json.loads(param['Parameter']['Value'])
 
-# -------- Snowflake connector options --------
-sfOptions = {
-    "sfURL": params["sfURL"],
-    "sfUser": params["sfUser"],
-    "sfPassword": params["sfPassword"],
-    "sfDatabase": params["sfDatabase"],
-    "sfSchema": params["sfSchema"],     # STAGING schema by default
-    "sfWarehouse": params["sfWarehouse"],
-    "sfRole": params["sfRole"]
-}
-
-# -------- Read dummy data from Snowflake --------
-df = spark.read \
-    .format("snowflake") \
+# Example: Read from staging table
+df = spark.read.format("snowflake") \
     .options(**sfOptions) \
     .option("dbtable", "CUSTOMER_MASTER") \
     .load()
 
-df.show()
+# Show results
+df.show(10, truncate=False)
