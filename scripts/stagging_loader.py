@@ -79,12 +79,12 @@ try:
     df.write.format("snowflake") \
         .options(**sfOptions) \
         .option("sfSchema", "STAGING") \
-        .option("dbtable", f"STG_{table_name.upper()}") \
+        .option("dbtable", "STG_CUSTOMER_MASTER") \
         .mode("append") \
         .save()
 
     logger.log("INFO", "File loaded successfully", {
-        "table": f"STG_{table_name.upper()}",
+        "table": "STG_CUSTOMER_MASTER",
         "rows": df.count()
     })
 except Exception as e:
