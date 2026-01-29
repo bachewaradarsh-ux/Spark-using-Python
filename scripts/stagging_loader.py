@@ -44,7 +44,7 @@ try:
         .option("query", "select coalesce(max(batch_id),0) as BATCH_ID from batch_control where batch_name = 'STG_LOAD'") \
         .load()
     batch_id = batch_df.collect()[0]["BATCH_ID"]
-    logger.log("INFO", "Fetched batch_id from CONFIG.BATCH", {"batch_id": batch_id})
+    logger.log("INFO", "Fetched batch_id from CONFIG.BATCH", {"batch_id": int(batch_id)})
 except Exception as e:
     logger.log("ERROR", "Failed to fetch batch_id", {"error": str(e)})
     batch_id = 0
@@ -61,7 +61,7 @@ logger.log("INFO", "Processing file", {
     "file": filename,
     "table": table_name,
     "lieferdatum": lieferdatum,
-    "batch_id": batch_id
+    "batch_id": int(batch_id)
 })
 
 # Read gzipped CSV into Spark DataFrame
@@ -69,7 +69,8 @@ df = spark.read.option("header", "true").csv(INPUT_FILE)
 
 # Add metadata columns
 df = df.withColumn("lieferdatum", F.lit(lieferdatum)) \
-       .withColumn("batch_id", F.lit(batch_id))
+       .withColumn("batch_id", F.lit(batch_id))\
+       .withColumn("PROCESSING_DATE", F.lit(F.current_date()))
 
 # -------------------------------
 # Load into Snowflake Staging Table
@@ -77,6 +78,7 @@ df = df.withColumn("lieferdatum", F.lit(lieferdatum)) \
 try:
     df.write.format("snowflake") \
         .options(**sfOptions) \
+        .option("sfSchema", "STAGING") \
         .option("dbtable", f"STG_{table_name.upper()}") \
         .mode("append") \
         .save()
