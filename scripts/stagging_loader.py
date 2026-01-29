@@ -68,7 +68,7 @@ logger.log("INFO", "Processing file", {
 df = spark.read.option("header", "true").csv(INPUT_FILE)
 
 # Add metadata columns
-df = df.withColumn("lieferdatum", F.lit(substr(lieferdatum,1,8))) \
+df = df.withColumn("lieferdatum", F.lit(F.substring(lieferdatum,1,8))) \
        .withColumn("batch_id", F.lit(batch_id))
 
 # -------------------------------
