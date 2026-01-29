@@ -55,7 +55,7 @@ except Exception as e:
 filename = INPUT_FILE
 parts = filename.replace(".csv.gz", "").split("_")
 table_name = parts[0] + "_" + parts[1]   # e.g. customer_master
-lieferdatum = F.substring(parts[-1],1,8)                 # e.g. 20260127
+lieferdatum = parts[-1][:8]               # e.g. 20260127
 
 logger.log("INFO", "Processing file", {
     "file": filename,
