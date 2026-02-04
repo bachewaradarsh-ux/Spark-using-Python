@@ -92,9 +92,3 @@ except Exception as e:
         "file": filename,
         "error": str(e)
     })
-
-# -------------------------------
-# Finalize
-# -------------------------------
-logger.log("INFO", "Job completed", {"status": "success"})
-logger.flush_to_s3()
