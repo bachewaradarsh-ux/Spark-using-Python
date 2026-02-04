@@ -55,7 +55,7 @@ except Exception as e:
 filename = INPUT_FILE
 parts = filename.replace(".csv.gz", "").split("_")
 table_name = parts[0] + "_" + parts[1]   # e.g. customer_master
-lieferdatum = parts[-1][:8]               # e.g. 20260127
+lieferdatum = parts[-1][:8]              # e.g. 20260127
 
 logger.log("INFO", "Processing file", {
     "file": filename,
@@ -69,12 +69,15 @@ df = spark.read.option("header", "true").csv(INPUT_FILE)
 
 # Add metadata columns
 df = df.withColumn("lieferdatum", F.lit(lieferdatum)) \
-       .withColumn("batch_id", F.lit(batch_id))\
+       .withColumn("batch_id", F.lit(batch_id)) \
        .withColumn("PROCESSING_DATE", F.lit(F.current_date()))
 
 # -------------------------------
 # Load into Snowflake Staging Table
 # -------------------------------
+staging_table = f"STG_{table_name.upper()}"
+row_count = df.count()
+
 try:
     df.write.format("snowflake") \
         .options(**sfOptions) \
@@ -84,11 +87,16 @@ try:
         .save()
 
     logger.log("INFO", "File loaded successfully", {
-        "table": "STG_CUSTOMER_MASTER",
-        "rows": df.count()
+        "table": "STG_CUSTOMER_MASTER"
+        "rows": row_count
     })
 except Exception as e:
-    logger.log("ERROR", "Failed to load file", {
+    logger.log("ERROR", "Snowflake load failed", {
         "file": filename,
         "error": str(e)
     })
+
+# -------------------------------
+# Finalize
+# -------------------------------
+logger.log("INFO", "Job completed", {"status": "success"})
