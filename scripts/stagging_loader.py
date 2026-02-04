@@ -38,11 +38,13 @@ sfOptions = json.loads(param['Parameter']['Value'])
 # Fetch Batch ID from Snowflake CONFIG.BATCH
 # -------------------------------
 try:
-    batch_df = spark.read.format("snowflake") \
-        .options(**sfOptions) \
-        .option("sfSchema", "CONFIG") \
-        .option("query", "select coalesce(max(batch_id),0) as BATCH_ID from batch_control where batch_name = 'STG_LOAD'") \
+    batch_df = (
+        spark.read.format("snowflake")
+        .options(**sfOptions)
+        .option("sfSchema", "CONFIG")
+        .option("query", "select coalesce(max(batch_id),0) as BATCH_ID from batch_control where batch_name = 'STG_LOAD'")
         .load()
+    )
     batch_id = batch_df.collect()[0]["BATCH_ID"]
     logger.log("INFO", "Fetched batch_id from CONFIG.BATCH", {"batch_id": int(batch_id)})
 except Exception as e:
@@ -68,26 +70,30 @@ logger.log("INFO", "Processing file", {
 df = spark.read.option("header", "true").csv(INPUT_FILE)
 
 # Add metadata columns
-df = df.withColumn("lieferdatum", F.lit(lieferdatum)) \
-       .withColumn("batch_id", F.lit(batch_id)) \
-       .withColumn("PROCESSING_DATE", F.lit(F.current_date()))
+df = (
+    df.withColumn("lieferdatum", F.lit(lieferdatum))
+      .withColumn("batch_id", F.lit(batch_id))
+      .withColumn("PROCESSING_DATE", F.lit(F.current_date()))
+)
 
 # -------------------------------
 # Load into Snowflake Staging Table
 # -------------------------------
-staging_table = f"STG_{table_name.upper()}"
+staging_table = "STG_CUSTOMER_MASTER"
 row_count = df.count()
 
 try:
-    df.write.format("snowflake") \
-        .options(**sfOptions) \
-        .option("sfSchema", "STAGING") \
-        .option("dbtable", "STG_CUSTOMER_MASTER") \
-        .mode("append") \
+    (
+        df.write.format("snowflake")
+        .options(**sfOptions)
+        .option("sfSchema", "STAGING")
+        .option("dbtable", staging_table)
+        .mode("append")
         .save()
+    )
 
     logger.log("INFO", "File loaded successfully", {
-        "table": "STG_CUSTOMER_MASTER"
+        "table": staging_table,
         "rows": row_count
     })
 except Exception as e:
