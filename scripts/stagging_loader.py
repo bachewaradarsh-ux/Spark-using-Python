@@ -12,14 +12,14 @@ from s3_logger import ProjectLogger
 # ------------------------------------------------
 
 args = getResolvedOptions(sys.argv,[
-"JOB_NAME",
-"file_date",
-"SNOWFLAKE_SECRET_NAME",
-"WAREHOUSE",
-"METADATA_DB",
-"CONFIG_SCHEMA",
-"STAGE_DB",
-"STAGE_SCHEMA"
+    "JOB_NAME",
+    "file_date",
+    "SNOWFLAKE_SECRET_NAME",
+    "WAREHOUSE",
+    "METADATA_DB",
+    "CONFIG_SCHEMA",
+    "STAGE_DB",
+    "STAGE_SCHEMA"
 ])
 
 JOB_NAME = args['JOB_NAME']
@@ -54,22 +54,28 @@ ssm = boto3.client("ssm")
 # ------------------------------------------------
 
 def get_conn():
-
     secret = ssm.get_parameter(Name=SECRET_NAME,WithDecryption=True)
     creds = json.loads(secret['Parameter']['Value'])
 
-    return snowflake.connector.connect(
+    conn = snowflake.connector.connect(
         user=creds['sfUser'],
         password=creds['sfPassword'],
         account=creds['sfURL'],
         warehouse=WAREHOUSE
     )
 
+    return conn
+
+def use_context(cursor, db, schema):
+    cursor.execute(f"USE DATABASE {db}")
+    cursor.execute(f"USE SCHEMA {schema}")
+
 # ------------------------------------------------
 # Idempotent Batch Handling
 # ------------------------------------------------
 
 def get_or_create_batch(cursor,total_files):
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
 
     cursor.execute(f"""
     SELECT BATCH_ID,BATCH_STATUS
@@ -82,12 +88,9 @@ def get_or_create_batch(cursor,total_files):
     row = cursor.fetchone()
 
     if row:
-
         batch_id,status = row
-
         if status == "SUCCESS":
             raise Exception("Batch already completed")
-
         cursor.execute(f"""
         UPDATE {METADATA_DB}.{CONFIG_SCHEMA}.BATCH_RUN_LOG
         SET BATCH_STATUS='RUNNING',
@@ -95,7 +98,6 @@ def get_or_create_batch(cursor,total_files):
             IS_ACTIVE_BATCH='Y'
         WHERE BATCH_ID=%s
         """,(batch_id,))
-
         return batch_id
 
     cursor.execute(f"""
@@ -134,6 +136,7 @@ def get_or_create_batch(cursor,total_files):
 # ------------------------------------------------
 
 def start_job(cursor,batch_id):
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
 
     cursor.execute(f"""
     INSERT INTO {METADATA_DB}.{CONFIG_SCHEMA}.JOB_RUN_LOG
@@ -160,6 +163,7 @@ def start_job(cursor,batch_id):
 # ------------------------------------------------
 
 def get_files(cursor):
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
 
     cursor.execute(f"""
     SELECT
@@ -179,6 +183,7 @@ def get_files(cursor):
 # ------------------------------------------------
 
 def filter_files_for_resume(cursor,batch_id,files):
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
 
     cursor.execute(f"""
     SELECT FILE_NAME,STATUS
@@ -189,12 +194,8 @@ def filter_files_for_resume(cursor,batch_id,files):
     status_map = {r[0]:r[1] for r in cursor.fetchall()}
 
     filtered=[]
-
     for f,t in files:
-
-        if f not in status_map:
-            filtered.append((f,t))
-        elif status_map[f] != "SUCCESS":
+        if f not in status_map or status_map[f] != "SUCCESS":
             filtered.append((f,t))
 
     return filtered
@@ -204,6 +205,7 @@ def filter_files_for_resume(cursor,batch_id,files):
 # ------------------------------------------------
 
 def insert_file_log(cursor,batch_id,file,table):
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
 
     cursor.execute(f"""
     INSERT INTO {METADATA_DB}.{CONFIG_SCHEMA}.FILE_PROCESS_LOG
@@ -223,6 +225,7 @@ def insert_file_log(cursor,batch_id,file,table):
 # ------------------------------------------------
 
 def update_file(cursor,batch_id,file,status,rows,error):
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
 
     cursor.execute(f"""
     UPDATE {METADATA_DB}.{CONFIG_SCHEMA}.FILE_PROCESS_LOG
@@ -239,11 +242,10 @@ def update_file(cursor,batch_id,file,status,rows,error):
 # ------------------------------------------------
 
 def load_stage(batch_id,file,table):
-
     conn=get_conn()
     cur=conn.cursor()
-
     try:
+        use_context(cur, STAGE_DB, STAGE_SCHEMA)
 
         cur.execute(f"TRUNCATE TABLE {STAGE_DB}.{STAGE_SCHEMA}.{table}")
 
@@ -261,23 +263,14 @@ def load_stage(batch_id,file,table):
         FILE_FORMAT=(TYPE=CSV COMPRESSION=GZIP SKIP_HEADER=1)
         """)
 
-        cur.execute("""
-        SELECT rows_loaded
-        FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-        """)
-
+        cur.execute("SELECT rows_loaded FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))")
         rows=cur.fetchone()[0]
-
         conn.commit()
-
         return(file,table,"SUCCESS",rows,None)
 
     except Exception as e:
-
         return(file,table,"FAILED",0,str(e))
-
     finally:
-
         cur.close()
         conn.close()
 
@@ -289,7 +282,6 @@ conn=get_conn()
 cursor=conn.cursor()
 
 try:
-
     files=get_files(cursor)
     total=len(files)
 
@@ -307,27 +299,22 @@ try:
     conn.commit()
 
     results=[]
-
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as exe:
-
         futures=[exe.submit(load_stage,batch_id,f,t) for f,t in files]
-
         for future in as_completed(futures):
             results.append(future.result())
 
     success=0
     records=0
-
     for f,t,s,r,e in results:
-
         update_file(cursor,batch_id,f,s,r,e)
-
         if s=="SUCCESS":
             success+=1
             records+=r
 
     batch_status="SUCCESS" if success==len(files) else "FAILED"
 
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
     cursor.execute(f"""
     UPDATE {METADATA_DB}.{CONFIG_SCHEMA}.BATCH_RUN_LOG
     SET BATCH_STATUS=%s,
@@ -348,7 +335,7 @@ try:
     conn.commit()
 
 except Exception as e:
-
+    use_context(cursor, METADATA_DB, CONFIG_SCHEMA)
     cursor.execute(f"""
     UPDATE {METADATA_DB}.{CONFIG_SCHEMA}.JOB_RUN_LOG
     SET JOB_STATUS='FAILED',
@@ -356,11 +343,9 @@ except Exception as e:
         END_TS=CURRENT_TIMESTAMP
     WHERE JOB_RUN_ID=%s
     """,(str(e),job_run_id))
-
     conn.commit()
     raise
 
 finally:
-
     cursor.close()
     conn.close()
