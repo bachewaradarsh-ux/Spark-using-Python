@@ -2,12 +2,13 @@ import sys
 import json
 import boto3
 import snowflake.connector
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
 from s3_logger import ProjectLogger
 
 # -------------------------------------------------------
-# Read Glue Arguments
+# Glue Arguments
 # -------------------------------------------------------
 
 args = getResolvedOptions(
@@ -26,16 +27,12 @@ args = getResolvedOptions(
 
 JOB_NAME = args['JOB_NAME']
 FILE_DATE = args['file_date']
-
 SECRET_NAME = args['SNOWFLAKE_SECRET_NAME']
 WAREHOUSE = args['WAREHOUSE']
-
 METADATA_DB = args['METADATA_DB']
 METADATA_SCHEMA = args['METADATA_SCHEMA']
-
 STAGE_DB = args['STAGE_DB']
 STAGE_SCHEMA = args['STAGE_SCHEMA']
-
 
 # -------------------------------------------------------
 # Spark Session
@@ -43,7 +40,6 @@ STAGE_SCHEMA = args['STAGE_SCHEMA']
 
 spark = SparkSession.builder.appName(JOB_NAME).getOrCreate()
 spark.sparkContext.setLogLevel("ERROR")
-
 
 # -------------------------------------------------------
 # Logger
@@ -57,13 +53,11 @@ logger.log("INFO","Glue Job Started",{
 
 logger.capture_spark_metadata(spark)
 
-
 # -------------------------------------------------------
 # AWS Client
 # -------------------------------------------------------
 
 ssm = boto3.client("ssm")
-
 
 # -------------------------------------------------------
 # Snowflake Connection
@@ -87,59 +81,10 @@ def get_snowflake_connection():
         schema=METADATA_SCHEMA
     )
 
-    logger.log("INFO","Snowflake connection established")
-
     return conn
 
-
 # -------------------------------------------------------
-# Get Batch ID
-# -------------------------------------------------------
-
-def get_batch_id(cursor):
-
-    cursor.execute(f"""
-    SELECT COALESCE(MAX(BATCH_ID),0)+1
-    FROM {METADATA_DB}.{METADATA_SCHEMA}.BATCH_RUN_LOG
-    """)
-
-    batch_id = cursor.fetchone()[0]
-
-    logger.log("INFO","Generated Batch ID",{
-        "batch_id":batch_id
-    })
-
-    return batch_id
-
-
-# -------------------------------------------------------
-# Insert Batch Log
-# -------------------------------------------------------
-
-def insert_batch_log(cursor,batch_id,total_files):
-
-    cursor.execute(f"""
-    INSERT INTO {METADATA_DB}.{METADATA_SCHEMA}.BATCH_RUN_LOG
-    (
-        BATCH_ID,
-        BATCH_DATE,
-        TOTAL_FILES_EXPECTED,
-        TOTAL_FILES_RECEIVED,
-        BATCH_STATUS,
-        BATCH_START_TS
-    )
-    VALUES
-    (%s,TO_DATE(%s,'YYYYMMDD'),%s,0,'IN_PROGRESS',CURRENT_TIMESTAMP)
-    """,(batch_id,FILE_DATE,total_files))
-
-    logger.log("INFO","Batch Run Inserted",{
-        "batch_id":batch_id,
-        "files_expected":total_files
-    })
-
-
-# -------------------------------------------------------
-# Fetch Files From Metadata
+# Fetch Files To Process
 # -------------------------------------------------------
 
 def get_files_to_process(cursor):
@@ -155,50 +100,16 @@ def get_files_to_process(cursor):
     WHERE m.file_date = TO_DATE(%s,'YYYYMMDD')
     """,(FILE_DATE,))
 
-    files = cursor.fetchall()
-
-    logger.log("INFO","Files fetched for processing",{
-        "total_files":len(files)
-    })
-
-    return files
-
+    return cursor.fetchall()
 
 # -------------------------------------------------------
-# Log File Status
+# Load Stage Table (Thread Safe)
 # -------------------------------------------------------
 
-def log_file_status(cursor,batch_id,file_name,stage_table,status,rows,error=None):
+def load_stage_table(batch_id,file_name,stage_table):
 
-    cursor.execute(f"""
-    INSERT INTO {METADATA_DB}.{METADATA_SCHEMA}.FILE_PROCESS_LOG
-    (
-        BATCH_ID,
-        FILE_NAME,
-        STAGE_TABLE,
-        STATUS,
-        ROWS_LOADED,
-        ERROR_MESSAGE,
-        START_TS,
-        END_TS
-    )
-    VALUES
-    (%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
-    """,(batch_id,file_name,stage_table,status,rows,error))
-
-    logger.log("INFO","File log inserted",{
-        "file":file_name,
-        "table":stage_table,
-        "status":status,
-        "rows":rows
-    })
-
-
-# -------------------------------------------------------
-# Load Stage Table
-# -------------------------------------------------------
-
-def load_stage_table(cursor,batch_id,file_name,stage_table):
+    conn = get_snowflake_connection()
+    cursor = conn.cursor()
 
     try:
 
@@ -240,36 +151,28 @@ def load_stage_table(cursor,batch_id,file_name,stage_table):
 
         rows = cursor.fetchone()[0]
 
-        log_file_status(
-            cursor,
-            batch_id,
-            file_name,
-            stage_table,
-            "SUCCESS",
-            rows
-        )
+        logger.log("INFO","Load completed",{
+            "table":stage_table,
+            "rows_loaded":rows
+        })
+
+        conn.commit()
 
         return True
 
     except Exception as e:
 
-        logger.log("ERROR","File Load Failed",{
-            "file":file_name,
+        logger.log("ERROR","Load failed",{
+            "table":stage_table,
             "error":str(e)
         })
 
-        log_file_status(
-            cursor,
-            batch_id,
-            file_name,
-            stage_table,
-            "FAILED",
-            0,
-            str(e)
-        )
-
         return False
 
+    finally:
+
+        cursor.close()
+        conn.close()
 
 # -------------------------------------------------------
 # MAIN EXECUTION
@@ -282,46 +185,55 @@ try:
 
     files = get_files_to_process(cursor)
 
-    total_files = len(files)
-
-    batch_id = get_batch_id(cursor)
-
-    insert_batch_log(cursor,batch_id,total_files)
-
-    conn.commit()
-
-    loaded_files = 0
-
-    for file_name,s3_path,stage_table in files:
-
-        success = load_stage_table(
-            cursor,
-            batch_id,
-            file_name,
-            stage_table
-        )
-
-        if success:
-            loaded_files += 1
-
-        conn.commit()
+    total_files=len(files)
 
     cursor.execute(f"""
-    UPDATE {METADATA_DB}.{METADATA_SCHEMA}.BATCH_RUN_LOG
-    SET
-        TOTAL_FILES_RECEIVED=%s,
-        BATCH_STATUS='COMPLETED',
-        BATCH_END_TS=CURRENT_TIMESTAMP
-    WHERE BATCH_ID=%s
-    """,(loaded_files,batch_id))
+    SELECT COALESCE(MAX(BATCH_ID),0)+1
+    FROM {METADATA_DB}.{METADATA_SCHEMA}.BATCH_RUN_LOG
+    """)
+
+    batch_id=cursor.fetchone()[0]
+
+    logger.log("INFO","Batch Started",{
+        "batch_id":batch_id,
+        "files":total_files
+    })
 
     conn.commit()
 
-    logger.log("INFO","Batch Completed",{
-        "batch_id":batch_id,
-        "files_loaded":loaded_files
-    })
+    # -------------------------------------------------------
+    # Parallel Execution
+    # -------------------------------------------------------
 
+    MAX_THREADS=10
+
+    loaded_files=0
+
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+
+        futures=[]
+
+        for file_name,s3_path,stage_table in files:
+
+            futures.append(
+                executor.submit(
+                    load_stage_table,
+                    batch_id,
+                    file_name,
+                    stage_table
+                )
+            )
+
+        for future in as_completed(futures):
+
+            result=future.result()
+
+            if result:
+                loaded_files+=1
+
+    logger.log("INFO","All Loads Completed",{
+        "loaded_files":loaded_files
+    })
 
 except Exception as e:
 
@@ -331,12 +243,9 @@ except Exception as e:
 
     raise e
 
-
 finally:
 
     cursor.close()
     conn.close()
 
 logger.log("INFO","Glue Job Finished")
-
-print("Stage Loader Completed")
