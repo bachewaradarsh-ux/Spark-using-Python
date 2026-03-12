@@ -364,5 +364,3 @@ finally:
 
     cursor.close()
     conn.close()
-
-logger.flush_summary()
