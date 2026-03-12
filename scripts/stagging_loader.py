@@ -15,7 +15,12 @@ args = getResolvedOptions(sys.argv, [
     'JOB_NAME',
     'file_date',
     'SNOWFLAKE_SECRET_NAME',
-    'WAREHOUSE'
+    'WAREHOUSE',
+    'METADATA_DB',
+    'METADATA_SCHEMA',
+    'STAGE_DB',
+    'STAGE_SCHEMA'
+    
 ])
 
 JOB_NAME = args['JOB_NAME']
