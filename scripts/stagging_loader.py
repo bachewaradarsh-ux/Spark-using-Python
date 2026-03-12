@@ -17,8 +17,8 @@ args = getResolvedOptions(
     sys.argv,
     [
         'JOB_NAME',
+        'file_prefix',
         'file_date',
-        'config',
         'SNOWFLAKE_SECRET_NAME',
         'WAREHOUSE',
         'METADATA_DB',
@@ -29,8 +29,8 @@ args = getResolvedOptions(
 )
 
 JOB_NAME = args['JOB_NAME']
+FILE_PREFIX = args['file_prefix']
 FILE_DATE = args['file_date']
-CONFIG = json.loads(args['config'])
 
 SECRET_NAME = args['SNOWFLAKE_SECRET_NAME']
 WAREHOUSE = args['WAREHOUSE']
@@ -58,6 +58,7 @@ logger = ProjectLogger(JOB_NAME)
 
 logger.log("INFO", "Glue Stage Loader Started", {
     "job_name": JOB_NAME,
+    "file_prefix": FILE_PREFIX,
     "file_date": FILE_DATE
 })
 
@@ -77,7 +78,7 @@ ssm = boto3.client('ssm')
 
 def get_snowflake_connection():
 
-    logger.log("INFO", "Fetching Snowflake credentials from SSM")
+    logger.log("INFO", "Fetching Snowflake credentials")
 
     param = ssm.get_parameter(
         Name=SECRET_NAME,
@@ -99,7 +100,7 @@ def get_snowflake_connection():
 
 
 # -------------------------------------------------------
-# Get Batch ID
+# Generate Batch ID (use sequence in production)
 # -------------------------------------------------------
 
 def get_batch_id(cursor):
@@ -119,10 +120,60 @@ def get_batch_id(cursor):
 
 
 # -------------------------------------------------------
+# Get File from Manifest
+# -------------------------------------------------------
+
+def get_file_from_manifest(cursor, prefix):
+
+    logger.log("INFO", "Fetching file from FILE_ARRIVAL_MANIFEST", {
+        "prefix": prefix,
+        "file_date": FILE_DATE
+    })
+
+    cursor.execute(f"""
+        SELECT file_name, s3_path
+        FROM {METADATA_DB}.{METADATA_SCHEMA}.FILE_ARRIVAL_MANIFEST
+        WHERE file_prefix=%s
+        AND file_date=TO_DATE(%s,'YYYYMMDD')
+    """, (prefix, FILE_DATE))
+
+    result = cursor.fetchone()
+
+    if not result:
+        raise Exception(f"No file found in manifest for prefix {prefix}")
+
+    return result[0], result[1]
+
+
+# -------------------------------------------------------
+# Get Stage Table Mapping
+# -------------------------------------------------------
+
+def get_stage_table(cursor, prefix):
+
+    logger.log("INFO", "Fetching stage table mapping", {
+        "prefix": prefix
+    })
+
+    cursor.execute(f"""
+        SELECT stage_table
+        FROM {METADATA_DB}.{METADATA_SCHEMA}.PIPELINE_CONFIG
+        WHERE file_prefix=%s
+    """, (prefix,))
+
+    result = cursor.fetchone()
+
+    if not result:
+        raise Exception(f"No stage table mapping found for prefix {prefix}")
+
+    return result[0]
+
+
+# -------------------------------------------------------
 # Insert Batch Log
 # -------------------------------------------------------
 
-def insert_batch_log(cursor,batch_id,total_files):
+def insert_batch_log(cursor,batch_id):
 
     cursor.execute(f"""
     INSERT INTO {METADATA_DB}.{METADATA_SCHEMA}.BATCH_RUN_LOG
@@ -141,20 +192,15 @@ def insert_batch_log(cursor,batch_id,total_files):
         %s,
         TO_DATE(%s,'YYYYMMDD'),
         'IN_PROGRESS',
-        %s,
+        1,
         0,
         'IN_PROGRESS',
         'Y',
         CURRENT_TIMESTAMP
     )
     """,
-    (batch_id,FILE_DATE,total_files)
+    (batch_id,FILE_DATE)
     )
-
-    logger.log("INFO", "Batch Run Log Inserted", {
-        "batch_id": batch_id,
-        "total_files_expected": total_files
-    })
 
 
 # -------------------------------------------------------
@@ -181,23 +227,18 @@ def log_file_status(cursor,batch_id,file_name,table_name,status,rows,error=None)
     (batch_id,file_name,table_name,rows,status,error)
     )
 
-    logger.log("INFO", "File Process Logged", {
-        "file": file_name,
-        "table": table_name,
-        "status": status,
-        "rows": rows
-    })
-
 
 # -------------------------------------------------------
 # Load Stage Table
 # -------------------------------------------------------
 
-def load_stage_table(cursor,batch_id,prefix,stage_table):
+def load_stage_table(cursor,batch_id,prefix):
 
-    file_name = f"{prefix}_{FILE_DATE}.csv.gz"
+    file_name, s3_path = get_file_from_manifest(cursor,prefix)
 
-    logger.log("INFO", "Starting File Load", {
+    stage_table = get_stage_table(cursor,prefix)
+
+    logger.log("INFO", "Starting file load", {
         "file": file_name,
         "stage_table": stage_table
     })
@@ -205,8 +246,7 @@ def load_stage_table(cursor,batch_id,prefix,stage_table):
     try:
 
         cursor.execute(f"""
-        TRUNCATE TABLE
-        {STAGE_DB}.{STAGE_SCHEMA}.{stage_table}
+        TRUNCATE TABLE {STAGE_DB}.{STAGE_SCHEMA}.{stage_table}
         """)
 
         copy_sql = f"""
@@ -220,7 +260,7 @@ def load_stage_table(cursor,batch_id,prefix,stage_table):
             t.$4,
             {batch_id} AS BATCH_ID,
             TO_DATE('{FILE_DATE}','YYYYMMDD') AS FILE_DATE
-            FROM @TELECOM_STAGE/{file_name} t
+            FROM @{s3_path}/{file_name} t
         )
         FILE_FORMAT=(
             TYPE=CSV
@@ -248,8 +288,7 @@ def load_stage_table(cursor,batch_id,prefix,stage_table):
             rows
         )
 
-        logger.log("INFO", "File Loaded Successfully", {
-            "file": file_name,
+        logger.log("INFO", "File loaded successfully", {
             "rows_loaded": rows
         })
 
@@ -257,8 +296,7 @@ def load_stage_table(cursor,batch_id,prefix,stage_table):
 
     except Exception as e:
 
-        logger.log("ERROR", "File Load Failed", {
-            "file": file_name,
+        logger.log("ERROR", "File load failed", {
             "error": str(e)
         })
 
@@ -284,68 +322,38 @@ cursor = conn.cursor()
 
 try:
 
-    total_files = sum(len(g["files"]) for g in CONFIG["groups"])
-
     batch_id = get_batch_id(cursor)
 
-    logger.log("INFO", "Starting Batch Processing", {
-        "batch_id": batch_id,
-        "file_date": FILE_DATE
-    })
-
-    insert_batch_log(cursor,batch_id,total_files)
+    insert_batch_log(cursor,batch_id)
 
     conn.commit()
 
-    loaded_files = 0
-
-    for group in CONFIG["groups"]:
-
-        logger.log("INFO", "Processing Group", {
-            "group_id": group["group"]
-        })
-
-        for file in group["files"]:
-
-            prefix = file["prefix"]
-            stage_table = file["stage_table"]
-
-            success = load_stage_table(
-                cursor,
-                batch_id,
-                prefix,
-                stage_table
-            )
-
-            if success:
-                loaded_files += 1
-
-            conn.commit()
+    success = load_stage_table(
+        cursor,
+        batch_id,
+        FILE_PREFIX
+    )
 
     cursor.execute(f"""
     UPDATE {METADATA_DB}.{METADATA_SCHEMA}.BATCH_RUN_LOG
     SET
-        TOTAL_FILES_RECEIVED=%s,
+        TOTAL_FILES_RECEIVED=1,
         STAGE_STATUS='COMPLETED',
         BATCH_STATUS='COMPLETED',
         BATCH_END_TS=CURRENT_TIMESTAMP
     WHERE BATCH_ID=%s
-    """,
-    (loaded_files,batch_id)
-    )
+    """,(batch_id,))
 
     conn.commit()
 
-    logger.log("INFO", "Batch Completed Successfully", {
-        "batch_id": batch_id,
-        "files_loaded": loaded_files
+    logger.log("INFO", "Batch Completed", {
+        "batch_id": batch_id
     })
 
 
 except Exception as e:
 
     logger.log("ERROR", "Batch Failed", {
-        "batch_id": batch_id,
         "error": str(e)
     })
 
@@ -356,8 +364,7 @@ except Exception as e:
         BATCH_STATUS='FAILED',
         BATCH_END_TS=CURRENT_TIMESTAMP
     WHERE BATCH_ID=%s
-    """,(batch_id,)
-    )
+    """,(batch_id,))
 
     conn.commit()
 
@@ -372,6 +379,7 @@ finally:
 
     logger.flush_summary({
         "batch_id": batch_id,
+        "file_prefix": FILE_PREFIX,
         "file_date": FILE_DATE,
         "status": "COMPLETED"
     })
