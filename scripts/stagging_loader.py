@@ -19,7 +19,8 @@ args = getResolvedOptions(sys.argv,[
     "METADATA_DB",
     "CONFIG_SCHEMA",
     "STAGE_DB",
-    "STAGE_SCHEMA"
+    "STAGE_SCHEMA",
+    "AWS_ROLE_ARN"
 ])
 
 JOB_NAME = args['JOB_NAME']
@@ -31,6 +32,7 @@ METADATA_DB = args['METADATA_DB']
 CONFIG_SCHEMA = args['CONFIG_SCHEMA']
 STAGE_DB = args['STAGE_DB']
 STAGE_SCHEMA = args['STAGE_SCHEMA']
+AWS_ROLE_ARN = args['AWS_ROLE_ARN']
 
 MAX_THREADS = 10
 
@@ -265,6 +267,7 @@ def load_stage(batch_id,file,table,s3_path):
         cur.execute(f"""
         COPY INTO {STAGE_DB}.{STAGE_SCHEMA}.{table}
         FROM '{s3_path}'
+        CREDENTIALS=(AWS_ROLE='{AWS_ROLE_ARN}')
         FILE_FORMAT=(TYPE=CSV COMPRESSION=GZIP SKIP_HEADER=1)
         """)
 
