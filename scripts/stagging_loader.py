@@ -20,7 +20,6 @@ args = getResolvedOptions(sys.argv,[
     "CONFIG_SCHEMA",
     "STAGE_DB",
     "STAGE_SCHEMA",
-    "AWS_ROLE_ARN"
 ])
 
 JOB_NAME = args['JOB_NAME']
@@ -32,7 +31,6 @@ METADATA_DB = args['METADATA_DB']
 CONFIG_SCHEMA = args['CONFIG_SCHEMA']
 STAGE_DB = args['STAGE_DB']
 STAGE_SCHEMA = args['STAGE_SCHEMA']
-AWS_ROLE_ARN = args['AWS_ROLE_ARN']
 
 MAX_THREADS = 10
 
@@ -181,8 +179,7 @@ def get_files(cursor):
     cursor.execute(f"""
     SELECT
     m.FILE_NAME,
-    c.STAGE_TABLE,
-    m.S3_PATH
+    c.STAGE_TABLE
     FROM {METADATA_DB}.{CONFIG_SCHEMA}.FILE_ARRIVAL_MANIFEST m
     JOIN {METADATA_DB}.{CONFIG_SCHEMA}.PIPELINE_CONFIG c
       ON m.FILE_PREFIX=c.FILE_PREFIX
@@ -208,9 +205,9 @@ def filter_files_for_resume(cursor,batch_id,files):
     status_map = {r[0]:r[1] for r in cursor.fetchall()}
 
     filtered=[]
-    for f,t,p in files:
+    for f,t in files:
         if f not in status_map or status_map[f] != "SUCCESS":
-            filtered.append((f,t,p))
+            filtered.append((f,t))
 
     return filtered
 
@@ -255,7 +252,7 @@ def update_file(cursor,batch_id,file,status,rows,error):
 # Load Stage
 # ------------------------------------------------
 
-def load_stage(batch_id,file,table,s3_path):
+def load_stage(batch_id,file,table):
     conn=get_conn()
     cur=conn.cursor()
     try:
@@ -266,8 +263,7 @@ def load_stage(batch_id,file,table,s3_path):
         # Load file directly from S3
         cur.execute(f"""
         COPY INTO {STAGE_DB}.{STAGE_SCHEMA}.{table}
-        FROM '{s3_path}'
-        CREDENTIALS=(AWS_ROLE='{AWS_ROLE_ARN}')
+        FROM @MY_STAGE/{file}
         FILE_FORMAT=(TYPE=CSV COMPRESSION=GZIP SKIP_HEADER=1)
         """)
 
@@ -308,14 +304,14 @@ try:
 
     files=filter_files_for_resume(cursor,batch_id,files)
 
-    for f,t,p in files:
+    for f,t in files:
         insert_file_log(cursor,batch_id,f,t)
 
     conn.commit()
 
     results=[]
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as exe:
-        futures=[exe.submit(load_stage,batch_id,f,t,p) for f,t,p in files]
+        futures=[exe.submit(load_stage,batch_id,f,t) for f,t in files]
         for future in as_completed(futures):
             results.append(future.result())
 
