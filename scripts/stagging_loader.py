@@ -250,8 +250,6 @@ def load_stage(batch_id,file,table,s3_path):
 
         cur.execute(f"TRUNCATE TABLE {STAGE_DB}.{STAGE_SCHEMA}.{table}")
 
-        from_path = f"'{s3_path}/{file}'"
-
         cur.execute(f"""
         COPY INTO {STAGE_DB}.{STAGE_SCHEMA}.{table}
         FROM (
@@ -261,7 +259,7 @@ def load_stage(batch_id,file,table,s3_path):
         t.$3,
         {batch_id},
         TO_DATE('{FILE_DATE}','YYYYMMDD')
-        FROM {from_path} t
+        FROM {s3_path} t
         )
         FILE_FORMAT=(TYPE=CSV COMPRESSION=GZIP SKIP_HEADER=1)
         """)
