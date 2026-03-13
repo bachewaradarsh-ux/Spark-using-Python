@@ -91,11 +91,13 @@ def get_or_create_batch(cursor,total_files):
         batch_id,status = row
         if status == "SUCCESS":
             raise Exception("Batch already completed")
+        # Update timestamps for re-run
         cursor.execute(f"""
         UPDATE {METADATA_DB}.{CONFIG_SCHEMA}.BATCH_RUN_LOG
         SET BATCH_STATUS='RUNNING',
             STAGE_STATUS='RUNNING',
-            IS_ACTIVE_BATCH='Y'
+            IS_ACTIVE_BATCH='Y',
+            BATCH_START_TS=CURRENT_TIMESTAMP
         WHERE BATCH_ID=%s
         """,(batch_id,))
         return batch_id
@@ -156,7 +158,16 @@ def start_job(cursor,batch_id):
     FROM {METADATA_DB}.{CONFIG_SCHEMA}.JOB_RUN_LOG
     """)
 
-    return cursor.fetchone()[0]
+    job_run_id = cursor.fetchone()[0]
+
+    # Ensure START_TS is updated if this is a retry for some reason
+    cursor.execute(f"""
+    UPDATE {METADATA_DB}.{CONFIG_SCHEMA}.JOB_RUN_LOG
+    SET START_TS=CURRENT_TIMESTAMP
+    WHERE JOB_RUN_ID=%s
+    """,(job_run_id,))
+
+    return job_run_id
 
 # ------------------------------------------------
 # Fetch Files
