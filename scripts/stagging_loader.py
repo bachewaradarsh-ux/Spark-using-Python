@@ -274,7 +274,7 @@ def load_stage(batch_id,file,table):
             FILE_DATE = TO_DATE(%s,'YYYYMMDD')
         """,(batch_id, FILE_DATE))
 
-        cur.execute("SELECT "ROWS_LOADED" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))")
+        cur.execute('SELECT "ROWS_LOADED" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))')
         rows=cur.fetchone()[0]
         conn.commit()
         return(file,table,"SUCCESS",rows,None)
