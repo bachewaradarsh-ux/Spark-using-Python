@@ -168,7 +168,8 @@ def get_files(cursor):
     cursor.execute(f"""
     SELECT
     m.FILE_NAME,
-    c.STAGE_TABLE
+    c.STAGE_TABLE,
+    m.S3_PATH
     FROM {METADATA_DB}.{CONFIG_SCHEMA}.FILE_ARRIVAL_MANIFEST m
     JOIN {METADATA_DB}.{CONFIG_SCHEMA}.PIPELINE_CONFIG c
       ON m.FILE_PREFIX=c.FILE_PREFIX
@@ -241,7 +242,7 @@ def update_file(cursor,batch_id,file,status,rows,error):
 # Load Stage
 # ------------------------------------------------
 
-def load_stage(batch_id,file,table):
+def load_stage(batch_id,file,table,s3_path):
     conn=get_conn()
     cur=conn.cursor()
     try:
@@ -258,7 +259,7 @@ def load_stage(batch_id,file,table):
         t.$3,
         {batch_id},
         TO_DATE('{FILE_DATE}','YYYYMMDD')
-        FROM @TELECOM_STAGE/{file} t
+        FROM {s3_path}/{file} t
         )
         FILE_FORMAT=(TYPE=CSV COMPRESSION=GZIP SKIP_HEADER=1)
         """)
@@ -300,7 +301,7 @@ try:
 
     results=[]
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as exe:
-        futures=[exe.submit(load_stage,batch_id,f,t) for f,t in files]
+        futures=[exe.submit(load_stage,batch_id,f,t,p) for f,t,p in files]
         for future in as_completed(futures):
             results.append(future.result())
 
