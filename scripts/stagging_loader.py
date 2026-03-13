@@ -195,9 +195,9 @@ def filter_files_for_resume(cursor,batch_id,files):
     status_map = {r[0]:r[1] for r in cursor.fetchall()}
 
     filtered=[]
-    for f,t in files:
+    for f,t,p in files:
         if f not in status_map or status_map[f] != "SUCCESS":
-            filtered.append((f,t))
+            filtered.append((f,t,p))
 
     return filtered
 
@@ -294,7 +294,7 @@ try:
 
     files=filter_files_for_resume(cursor,batch_id,files)
 
-    for f,t in files:
+    for f,t,p in files:
         insert_file_log(cursor,batch_id,f,t)
 
     conn.commit()
