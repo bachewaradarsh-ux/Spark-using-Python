@@ -261,19 +261,19 @@ def load_stage(batch_id,file,table,s3_path):
 
         cur.execute(f"TRUNCATE TABLE {STAGE_DB}.{STAGE_SCHEMA}.{table}")
 
+        # Load file directly from S3
         cur.execute(f"""
         COPY INTO {STAGE_DB}.{STAGE_SCHEMA}.{table}
-        FROM (
-        SELECT
-        t.$1,
-        t.$2,
-        t.$3,
-        {batch_id},
-        TO_DATE('{FILE_DATE}','YYYYMMDD')
-        FROM {s3_path} t
-        )
+        FROM '{s3_path}'
         FILE_FORMAT=(TYPE=CSV COMPRESSION=GZIP SKIP_HEADER=1)
         """)
+
+        # Update extra columns (BATCH_ID, FILE_DATE) after load
+        cur.execute(f"""
+        UPDATE {STAGE_DB}.{STAGE_SCHEMA}.{table}
+        SET BATCH_ID = %s,
+            FILE_DATE = TO_DATE(%s,'YYYYMMDD')
+        """,(batch_id, FILE_DATE))
 
         cur.execute("SELECT rows_loaded FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))")
         rows=cur.fetchone()[0]
